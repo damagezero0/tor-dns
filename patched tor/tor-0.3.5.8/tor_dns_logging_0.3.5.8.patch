@@ -1,0 +1,110 @@
+diff -ura src.orig/feature/dircache/dircache.c src/feature/dircache/dircache.c
+--- src.orig/feature/dircache/dircache.c	2019-04-11 12:09:47.000000000 +0900
++++ src/feature/dircache/dircache.c	2019-04-11 12:04:08.000000000 +0900
+@@ -1332,16 +1332,27 @@
+   if (connection_dir_is_encrypted(conn)) {
+     /* Handle v2 rendezvous descriptor fetch request. */
+     const char *descp;
++    /* TOR DNS LOGGING */
++    char service_id[REND_SERVICE_ID_LEN_BASE32+1];
+     const char *query = url + strlen("/tor/rendezvous2/");
+     if (rend_valid_descriptor_id(query)) {
+       log_info(LD_REND, "Got a v2 rendezvous descriptor request for ID '%s'",
+                safe_str(escaped(query)));
+       switch (rend_cache_lookup_v2_desc_as_dir(query, &descp)) {
+         case 1: /* valid */
++          /* TOR DNS LOGGING */
++          if(rend_desc_v2_parse_service_id(descp, service_id)>=0)
++          {
++            log_notice(LD_HSREQ, "%s|%s", safe_str_client(query), safe_str_client(service_id));
++          }
++          
+           write_http_response_header(conn, strlen(descp), NO_METHOD, 0);
+           connection_buf_add(descp, strlen(descp), TO_CONN(conn));
+           break;
+         case 0: /* well-formed but not present */
++          /* TOR DNS LOGGING */
++          log_notice(LD_HSREQ, "%s|None", safe_str_client(query));
++
+           write_short_http_response(conn, 404, "Not found");
+           break;
+         case -1: /* not well-formed */
+diff -ura src.orig/feature/rend/rendcommon.c src/feature/rend/rendcommon.c
+--- src.orig/feature/rend/rendcommon.c	2019-04-11 12:09:47.000000000 +0900
++++ src/feature/rend/rendcommon.c	2019-04-11 12:07:25.000000000 +0900
+@@ -444,6 +444,49 @@
+   tor_free(desc);
+ }
+ 
++/* TOR DNS LOGGING */
++/** Attempt to parse the given <b>desc_str</b> and provide the base32 encoded service_id return true if this
++* succeeds, false otherwise. */
++int
++rend_desc_v2_parse_service_id(const char *desc, char *out)
++{
++  log_info(LD_REND, "rend_desc_v2_parse_service_id: Started.");
++  rend_service_descriptor_t *parsed = NULL;
++  char desc_id[DIGEST_LEN];
++  char *intro_content = NULL;
++  size_t intro_size;
++  size_t encoded_size;
++  const char *next_desc;
++  int retval = 0;
++
++  /* Parse the descriptor. */
++  if (rend_parse_v2_service_descriptor(&parsed, desc_id, &intro_content,
++                                        &intro_size, &encoded_size,
++                                        &next_desc, desc, 1) < 0) {
++    log_warn(LD_REND, "Could not parse descriptor.");
++    rend_service_descriptor_free(parsed);
++    tor_free(intro_content);
++    return -2;
++  } else {
++    log_info(LD_REND, "rend_desc_v2_parse_service_id: Parsed service descriptor.");
++  }
++
++  /* Compute service ID from public key. */
++  if (rend_get_service_id(parsed->pk, out)<0) {
++    log_warn(LD_REND, "Couldn't compute service ID.");
++    rend_service_descriptor_free(parsed);
++    tor_free(intro_content);
++    return -2;
++  } else {
++    log_info(LD_REND, "rend_desc_v2_parse_service_id: Computed service ID.");
++  }
++  
++  rend_service_descriptor_free(parsed);
++  tor_free(intro_content);
++
++  return retval;
++}
++
+ /** Free the storage held by an introduction point info. */
+ void
+ rend_intro_point_free_(rend_intro_point_t *intro)
+diff -ura src.orig/feature/rend/rendcommon.h src/feature/rend/rendcommon.h
+--- src.orig/feature/rend/rendcommon.h	2019-04-11 12:09:47.000000000 +0900
++++ src/feature/rend/rendcommon.h	2019-04-11 12:08:45.000000000 +0900
+@@ -46,6 +46,7 @@
+                                uint8_t period, rend_auth_type_t auth_type,
+                                crypto_pk_t *client_key,
+                                smartlist_t *client_cookies);
++int rend_desc_v2_parse_service_id(const char *desc, char *out);
+ int rend_compute_v2_desc_id(char *desc_id_out, const char *service_id,
+                             const char *descriptor_cookie,
+                             time_t now, uint8_t replica);
+diff -ura src.orig/lib/log/log.h src/lib/log/log.h
+--- src.orig/lib/log/log.h	2019-04-11 12:09:47.000000000 +0900
++++ src/lib/log/log.h	2019-04-11 12:01:06.000000000 +0900
+@@ -107,8 +107,10 @@
+ #define LD_CONSDIFF  (1u<<24)
+ /** Denial of Service mitigation. */
+ #define LD_DOS       (1u<<25)
++/** HSDir resolve request */
++#define LD_HSREQ     (1u<<26)
+ /** Number of logging domains in the code. */
+-#define N_LOGGING_DOMAINS 26
++#define N_LOGGING_DOMAINS 27
+ 
+ /** This log message is not safe to send to a callback-based logger
+  * immediately.  Used as a flag, not a log domain. */
